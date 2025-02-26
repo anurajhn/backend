@@ -1,13 +1,22 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jan 31 16:47:57 2025
+
+@author: rachna
+"""
+# backend/app/main.py
 from fastapi import FastAPI, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.middleware.cors import CORSMiddleware
 from .database import SessionLocal, engine, Base
 from .models import College, SeatAllotment
 from .schemas import CollegeSchema, SeatAllotmentSchema
 from typing import List, Optional
-from sqlalchemy import desc, asc
-from sqlalchemy.orm import joinedload
+from sqlalchemy.future import select
 from sqlalchemy import func, case
+import asyncio
 
 app = FastAPI()
 
@@ -27,9 +36,10 @@ def get_db():
     finally:
         db.close()
 
+
 @app.get("/seat_allotments")
-def get_seat_allotments(
-    db: Session = Depends(get_db),
+async def get_seat_allotments(
+    db: AsyncSession = Depends(get_db),
     cetyear : Optional[int] = Query(None),
     cetround: Optional[str] = Query(None),
     collegecode: Optional[str] = Query(None),
@@ -41,22 +51,22 @@ def get_seat_allotments(
     limit: int = Query(10, ge=1, le=100),
     offset: int = Query(0, ge=0)
 ):
-    query = db.query(SeatAllotment)
+    query = select(SeatAllotment)
 
     #offset = (page - 1) * limit  # Calculate offset
 
-    # Mandatory filters
+    # Mandatory wheres
     if cetround:
-        query = query.filter(SeatAllotment.cetround==cetround)    # Apply search filters
+        query = query.where(SeatAllotment.cetround==cetround)    # Apply search wheres
      
     if category:
-        query = query.filter(SeatAllotment.category == category)
+        query = query.where(SeatAllotment.category == category)
     if collegecode:
-        query = query.filter(SeatAllotment.collegecode == collegecode)
+        query = query.where(SeatAllotment.collegecode == collegecode)
     if cetyear:
-        query = query.filter(SeatAllotment.cetyear==cetyear)    # Apply search filters
+        query = query.where(SeatAllotment.cetyear==cetyear)    # Apply search wheres
     if course:
-        query = query.filter(SeatAllotment.course.ilike(f"%{course}%"))
+        query = query.where(SeatAllotment.course.ilike(f"%{course}%"))
 
     # Apply sorting
     if sort_by in ["college", "course", "category", "cutoffrank"]:
@@ -65,6 +75,10 @@ def get_seat_allotments(
         else:
             query = query.order_by(getattr(SeatAllotment, sort_by).asc())
 
+    if sort_by:
+        order_func = getattr(SeatAllotment, sort_by).desc() if order == "desc" else getattr(SeatAllotment, sort_by).asc()
+        query = query.order_by(order_func)
+        
 # =============================================================================
 #     # Sorting
 #     order_func = asc if order == "asc" else desc
@@ -72,31 +86,28 @@ def get_seat_allotments(
 #         query = query.order_by(order_func(getattr(SeatAllotment, sort_by)))
 # =============================================================================
         
-    results = query.all()
-        # Get total count
-    total = query.count()
+    results = await db.execute(query.limit(limit).offset(offset))
+    results = results.scalars().all()
+    total = len(results)
     
-    # Apply pagination
-    results = query.limit(limit).offset(offset).all()
-
-    db.close()
+    #db.close()
     if not results:
         raise HTTPException(status_code=404, detail="No seat allotments found")
     return {"total": total, "data": results}
 
 @app.get("/filters")
-def get_filters(db: Session = Depends(get_db)):
-    college_codes = db.query(SeatAllotment.collegecode).distinct().all()
-    categories = db.query(SeatAllotment.category).distinct().all()
+async def get_filters(db: AsyncSession = Depends(get_db)):
+    college_codes_query = await db.execute(select(SeatAllotment.collegecode).distinct())
+    categories_query = await db.execute(select(SeatAllotment.category).distinct())
     
     return {
-        "collegeCodes": [cc[0] for cc in college_codes],
-        "categories": [cat[0] for cat in categories]
+        "collegeCodes": [cc[0] for cc in college_codes_query.fetchall()],
+        "categories": [cat[0] for cat in categories_query.fetchall()]
     }
 
 @app.get("/collegeList")
-def get_college_list(
-    db: Session = Depends(get_db),
+async def get_college_list(
+    db: AsyncSession = Depends(get_db),
     collegecode: Optional[str] = Query(None),
     college: Optional[str] = Query(None),
     location: Optional[str] = Query(None),
@@ -109,33 +120,31 @@ def get_college_list(
     offset: int = Query(0, ge=0)
         
 ):
-    query = db.query(College)
+    query = select(College)
+    #query = select(SeatAllotment)
+
     if collegecode:
-        query = query.filter(College.collegecode==collegecode)    # Apply search filters
+        query = query.where(College.collegecode==collegecode)    # Apply search filters
  
     if city:
-        query = query.filter(College.city == city)
+        query = query.where(College.city == city)
 
-    results = query.all()
-        # Get total count
-    total = query.count()
-    
-    # Apply pagination
-    results = query.limit(limit).offset(offset).all()
+    results = await db.execute(query.limit(limit).offset(offset))
+    results = results.scalars().all()
+    total = len(results)
 
-    db.close()
     if not results:
         raise HTTPException(status_code=404, detail="No Colleges found")
     return {"total": total, "data": results}
 
 @app.get("/Collegefilters")
-def get_filters(db: Session = Depends(get_db)):
-    locationcodes = db.query(College.location).distinct().all()
-    citycodes = db.query(College.city).distinct().all()
-    
+async def get_filters(db: AsyncSession = Depends(get_db)):
+    locationcodes_query = await db.execute(select(College.location).distinct())
+    citycodes_query = await db.execute(select(College.city).distinct())
+
     return {
-        "locations": [lc[0] for lc in locationcodes],
-        "cities": [cc[0] for cc in citycodes]
+        "locations": [lc for lc in locationcodes_query.scalars().all()],
+        "cities": [cc for cc in citycodes_query.scalars().all()]
     }
 
 
